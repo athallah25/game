@@ -1,0 +1,300 @@
+name: Build APK
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write project files
+        run: |
+          mkdir -p "$(dirname settings.gradle)"
+          cat > settings.gradle <<'__EOF__'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = 'CitySim'
+          include ':app'
+          __EOF__
+          mkdir -p "$(dirname build.gradle)"
+          cat > build.gradle <<'__EOF__'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          __EOF__
+          mkdir -p "$(dirname app/build.gradle)"
+          cat > app/build.gradle <<'__EOF__'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.city.sim'
+              compileSdk 34
+              defaultConfig { applicationId 'com.city.sim'; minSdk 24; targetSdk 34; versionCode 1; versionName '1.0' }
+          }
+          __EOF__
+          mkdir -p "$(dirname app/src/main/AndroidManifest.xml)"
+          cat > app/src/main/AndroidManifest.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="City Sim" android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+                  <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="sensorLandscape" android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          __EOF__
+          mkdir -p "$(dirname app/src/main/java/com/city/sim/MainActivity.java)"
+          cat > app/src/main/java/com/city/sim/MainActivity.java <<'__EOF__'
+          package com.city.sim;
+
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.content.Context;
+          import android.graphics.*;
+          import android.media.*;
+          import android.os.Bundle;
+          import android.view.*;
+          import android.widget.*;
+          import java.util.*;
+
+          public class MainActivity extends Activity {
+              @Override protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                  setContentView(new Game(this));
+              }
+          }
+
+          class E { float x, y; }
+          class Bd { char t; int bx, by, g, cash = 3000; float x0, y0, x1, y1, dx, dy; }
+          class Car extends E { float a, spd; boolean ai = true; N drv; int col; }
+          class Cop extends E { float hp = 60, atk; }
+          class N extends E {
+              String name; int happy, like, crim, job, gang, cash, sav, bx, by, c, col;
+              float hp = 50, inT, pay, atk, hostile, dT, sp, inv; boolean armed, in, dead; Bd dest; Car car;
+          }
+          interface Act { void go(int i); }
+
+          class Game extends View {
+              static final int T = 40, BS = 10, NB = 6, WT = 60;
+              static final String[] L = {"hMhBhX", "hhAhPh", "BhhhMh", "hXhhhh", "hhHhBh", "hhhAhh"};
+              static final String[] GN = {"None", "Reds", "Blues"}, JN = {"Unemployed", "McDonald's", "Cop", "Bank", "Gang"};
+              static final String[] NM = {"Ava", "Ben", "Cruz", "Dina", "Eli", "Faye", "Gus", "Hana", "Ivan", "Jo", "Kai", "Lena", "Milo", "Nia", "Omar", "Pia", "Ray", "Sol", "Tara", "Zed"};
+              static final int[] GC = {0xFF9E9E9E, 0xFFE53935, 0xFF1E88E5}, HC = {0xFF8D6E63, 0xFF78909C, 0xFFA1887F, 0xFF7986CB};
+              static final String[][] RN = {{"-"}, {"Fry cook", "Cashier", "Shift lead", "Manager"}, {"Rookie", "Officer", "Sergeant", "Captain"}, {"Trainee", "Clerk", "Teller", "Manager"}, {"Recruit", "Enforcer", "Captain", "Boss"}};
+              Random rd = new Random();
+              Paint p = new Paint(Paint.ANTI_ALIAS_FLAG), dash = new Paint();
+              ArrayList<Bd> bds = new ArrayList<>();
+              ArrayList<N> ns = new ArrayList<>();
+              ArrayList<Car> cars = new ArrayList<>();
+              ArrayList<Cop> cops = new ArrayList<>();
+              ArrayList<float[]> fx = new ArrayList<>();
+              int[][] own = new int[NB][NB];
+              int[] xp = new int[5];
+              E pl = new E();
+              Car drv;
+              AudioTrack hitS, shotS;
+              String msg = "";
+              boolean rot = true, paused, gun, mansion;
+              int w, h, jid = -1, hitId = -1, hp = 100, cash = 300, sav, stars, job, gang, ammo, wpn, sec, wbx, wby, wa, warT, gc;
+              long last;
+              float u, jx, jy, jbx, jby, pa, atkT, shiftT, starT, flash, msgT, cT, acc, pcrim, crimeIdx = .25f;
+
+              Game(Context ctx) {
+                  super(ctx);
+                  u = ctx.getResources().getDisplayMetrics().density;
+                  p.setFakeBoldText(true);
+                  dash.setStyle(Paint.Style.STROKE); dash.setStrokeWidth(3); dash.setColor(0xAAFFFFFF);
+                  dash.setPathEffect(new DashPathEffect(new float[]{18, 14}, 0));
+                  hitS = mk(2600, .08f, .6f); shotS = mk(7000, .03f, .85f);
+                  for (int by = 0; by < NB; by++) for (int bx = 0; bx < NB; bx++) {
+                      Bd b = new Bd(); b.t = L[by].charAt(bx); b.bx = bx; b.by = by;
+                      b.x0 = (bx * BS + 3) * T; b.y0 = (by * BS + 3) * T; b.x1 = (bx * BS + 9) * T; b.y1 = (by * BS + 9) * T;
+                      b.dx = (bx * BS + 6) * T; b.dy = b.y1 + T / 2f; if (b.t == 'X') b.g = ++gc; bds.add(b);
+                  }
+                  own[0][5] = own[0][4] = own[1][5] = 1; own[3][1] = own[3][0] = own[4][1] = 2;
+                  pl.x = 32.5f * T; pl.y = 32.5f * T;
+                  for (int i = 0; i < 40; i++) { N n = new N(); mkN(n); ns.add(n); }
+                  for (int i = 0; i < 14; i++) mkCar();
+                  say("Welcome! Talk to people, work, join a gang... or cause chaos.");
+              }
+
+              float cs(float a) { return (float) Math.cos(a); }
+              float sn(float a) { return (float) Math.sin(a); }
+              float dist(float ax, float ay, float bx, float by) { return (float) Math.sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by)); }
+              float dp(float x, float y) { return dist(x, y, pl.x, pl.y); }
+              int cl(int v) { return Math.max(0, Math.min(100, v)); }
+              int rk(int x) { return x < 10 ? 0 : x < 30 ? 1 : x < 60 ? 2 : 3; }
+              String role(int j) { return RN[j][rk(xp[j])]; }
+              void say(String s) { msg = s; msgT = 3.5f; }
+              Bd find(char t) { for (Bd b : bds) if (b.t == t) return b; return null; }
+
+              AudioTrack mk(int n, float f, float nz) {
+                  short[] b = new short[n];
+                  for (int i = 0; i < n; i++) { float e = 1f - i / (float) n; float v = nz * (rd.nextFloat() * 2 - 1) + (1 - nz) * (float) Math.sin(i * f); b[i] = (short) (v * e * e * 26000); }
+                  AudioTrack t = new AudioTrack(AudioManager.STREAM_MUSIC, 22050, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, n * 2, AudioTrack.MODE_STATIC);
+                  t.write(b, 0, n); return t;
+              }
+              void snd(float x, float y, AudioTrack t) { if (dp(x, y) > 700) return; try { t.stop(); t.reloadStaticData(); t.play(); } catch (Exception e) { } }
+              void burst(float x, float y, int col, int n) {
+                  for (int i = 0; i < n; i++) { float a = rd.nextFloat() * 6.283f, s = 60 + rd.nextInt(160); fx.add(new float[]{x, y, cs(a) * s, sn(a) * s, .45f, col, 0}); }
+                  fx.add(new float[]{x, y, 0, 0, .35f, 0xFFFFFFFF, 1});
+              }
+
+              void mkN(N n) {
+                  n.name = NM[rd.nextInt(NM.length)] + " " + (char) ('A' + rd.nextInt(26)) + ".";
+                  n.happy = 30 + rd.nextInt(60); n.like = 25 + rd.nextInt(50);
+                  n.crim = rd.nextInt(100) < 12 ? 60 + rd.nextInt(35) : rd.nextInt(45);
+                  n.job = rd.nextInt(100) < 35 ? 0 : 1 + rd.nextInt(3); n.gang = 0;
+                  if (n.crim > 65) { n.gang = 1 + rd.nextInt(2); n.job = 4; }
+                  n.cash = rd.nextInt(200); n.sav = rd.nextInt(400); n.armed = n.crim > 75; n.hp = 50;
+                  n.dead = false; n.in = false; n.hostile = 0; n.inv = 0; n.car = null; n.dest = null;
+                  n.bx = rd.nextInt(NB); n.by = rd.nextInt(NB); n.c = rd.nextInt(4);
+                  n.x = (n.bx * BS + (n.c == 0 || n.c == 3 ? 2 : 9) + .5f) * T; n.y = (n.by * BS + (n.c < 2 ? 2 : 9) + .5f) * T;
+                  n.sp = 45 + rd.nextInt(25); n.pay = rd.nextInt(15);
+                  n.col = Color.HSVToColor(new float[]{rd.nextInt(360), .5f, .9f});
+              }
+              void mkCar() {
+                  Car c = new Car(); boolean v = rd.nextBoolean(); int k = rd.nextInt(NB), ln = rd.nextInt(2); float al = rd.nextFloat() * WT * T;
+                  if (v) { c.x = (k * BS + ln + .5f) * T; c.y = al; c.a = ln == 0 ? 1.5708f : -1.5708f; }
+                  else { c.y = (k * BS + ln + .5f) * T; c.x = al; c.a = ln == 0 ? 0 : 3.1416f; }
+                  c.col = Color.HSVToColor(new float[]{rd.nextInt(360), .7f, .85f});
+                  for (N n : ns) if (n.car == null && !n.dead && !n.in) { n.car = c; c.drv = n; break; }
+                  cars.add(c);
+              }
+              void snap(N n) {
+                  n.bx = Math.max(0, Math.min(NB - 1, (int) (n.x / (BS * T)))); n.by = Math.max(0, Math.min(NB - 1, (int) (n.y / (BS * T))));
+                  boolean l = n.x % (BS * T) < 5 * T, t = n.y % (BS * T) < 5 * T; n.c = t ? (l ? 0 : 1) : (l ? 3 : 2);
+              }
+
+              boolean solid(float x, float y) {
+                  int tx = (int) Math.floor(x / T), ty = (int) Math.floor(y / T);
+                  if (tx < 0 || ty < 0 || tx >= WT || ty >= WT) return true;
+                  int a = tx % BS, b = ty % BS; return a >= 3 && a <= 8 && b >= 3 && b <= 8;
+              }
+              boolean free(float x, float y, float r) { return !solid(x - r, y - r) && !solid(x + r, y - r) && !solid(x - r, y + r) && !solid(x + r, y + r); }
+              boolean step(E e, float dx, float dy, float r) {
+                  boolean ok = false;
+                  if (free(e.x + dx, e.y, r)) { e.x += dx; ok = true; }
+                  if (free(e.x, e.y + dy, r)) { e.y += dy; ok = true; }
+                  return ok;
+              }
+
+              int[] nxt(int bx, int by, int c, int tb, int ty, boolean r) {
+                  if (!r) {
+                      if (bx != tb) { int s = tb > bx ? 1 : -1; if ((s > 0) == (c == 1 || c == 2)) return new int[]{bx + s, by, s > 0 ? (c == 1 ? 0 : 3) : (c == 0 ? 1 : 2)}; return new int[]{bx, by, c == 0 ? 1 : c == 1 ? 0 : c == 2 ? 3 : 2}; }
+                      if (by != ty) { int s = ty > by ? 1 : -1; if ((s > 0) == (c == 2 || c == 3)) return new int[]{bx, by + s, s > 0 ? (c == 2 ? 1 : 0) : (c == 0 ? 3 : 2)}; return new int[]{bx, by, c == 0 ? 3 : c == 3 ? 0 : c == 1 ? 2 : 1}; }
+                      return new int[]{bx, by, c == 0 ? 3 : c == 1 ? 2 : c};
+                  }
+                  int q = rd.nextInt(4);
+                  if (q == 0) return new int[]{bx, by, (c + 1) % 4};
+                  if (q == 1) return new int[]{bx, by, (c + 3) % 4};
+                  if (q == 2) { int s = (c == 1 || c == 2) ? 1 : -1; if (bx + s >= 0 && bx + s < NB) return new int[]{bx + s, by, s > 0 ? (c == 1 ? 0 : 3) : (c == 0 ? 1 : 2)}; }
+                  else { int s = (c == 2 || c == 3) ? 1 : -1; if (by + s >= 0 && by + s < NB) return new int[]{bx, by + s, s > 0 ? (c == 2 ? 1 : 0) : (c == 0 ? 3 : 2)}; }
+                  return new int[]{bx, by, (c + 1) % 4};
+              }
+              Bd near(N n, char t) {
+                  Bd r = null; float bd = 1e9f;
+                  for (Bd b : bds) if (b.t == t) { float d = Math.abs(b.bx - n.bx) + Math.abs(b.by - n.by) + rd.nextFloat(); if (d < bd) { bd = d; r = b; } }
+                  return r;
+              }
+              void plan(N n) {
+                  if (n.cash > 180 || (n.cash < 25 && n.sav > 40)) n.dest = near(n, 'B');
+                  else if (n.crim > 55 && !n.armed && n.cash >= 250) n.dest = near(n, 'A');
+                  else if (n.cash >= 12 && rd.nextInt(4) == 0) n.dest = near(n, 'M');
+                  else if (n.job == 1 && rd.nextInt(3) == 0) n.dest = near(n, 'M');
+                  else if (n.job == 3 && rd.nextInt(3) == 0) n.dest = near(n, 'B');
+              }
+              void visit(N n, Bd d) {
+                  if (d.t == 'B') {
+                      if (n.job == 3) n.happy = cl(n.happy + 2);
+                      else if (n.cash > 150) { int a = n.cash - 40; n.sav += a; d.cash += a; n.cash = 40; }
+                      else if (n.sav > 0) { int a = Math.min(n.sav, 100); n.sav -= a; d.cash = Math.max(0, d.cash - a); n.cash += a; }
+                  } else if (d.t == 'A') { if (n.cash >= 250 && n.crim > 50) { n.cash -= 250; n.armed = true; } }
+                  else if (d.t == 'M') { if (n.cash >= 10) { n.cash -= 10; n.happy = cl(n.happy + 8); } }
+              }
+
+              void updN(N n, float dt) {
+                  n.inv -= dt;
+                  if (n.dead) { n.dT -= dt; if (n.dT <= 0) mkN(n); return; }
+                  if (n.car != null) { n.x = n.car.x; n.y = n.car.y; return; }
+                  n.pay -= dt;
+                  if (n.pay <= 0) {
+                      n.pay = 14 + rd.nextInt(8);
+                      int inc = n.job == 1 ? 10 : n.job == 2 ? 16 : n.job == 3 ? 18 : n.job == 4 ? 14 : 0;
+                      if (n.crim > 60) inc += rd.nextInt(15);
+                      n.cash += inc; n.happy = cl(n.happy + (inc > 0 ? 1 : -2) + (n.cash < 15 ? -2 : 0));
+                      if (rd.nextFloat() < crimeIdx * .2f || n.happy < 25) n.crim = cl(n.crim + 1); else if (n.happy > 70 && rd.nextInt(3) == 0) n.crim = cl(n.crim - 1);
+                      if (n.crim > 65 && n.gang == 0 && rd.nextInt(3) == 0) { n.gang = 1 + rd.nextInt(2); n.job = 4; n.armed |= rd.nextBoolean(); }
+                      else if (n.job == 0 && n.crim < 55 && rd.nextInt(5) == 0) n.job = 1 + rd.nextInt(3);
+                      if (n.crim > 75 && n.cash > 200) n.armed = true;
+                  }
+                  if (n.in) { n.inT -= dt; if (n.inT <= 0) { Bd d = n.dest; n.in = false; visit(n, d); n.dest = null; n.bx = d.bx; n.by = d.by; n.c = 3; } return; }
+                  float d0 = dp(n.x, n.y);
+                  if (n.hostile > 0) {
+                      n.hostile -= dt; n.atk -= dt;
+                      if (d0 < 320 && d0 > 22) step(n, (pl.x - n.x) / d0 * 80 * dt, (pl.y - n.y) / d0 * 80 * dt, 9);
+                      if (n.atk <= 0 && drv == null) { if (d0 < 26) { n.atk = .9f; dmg(5); } else if (n.armed && d0 < 260) { n.atk = 1.3f; dmg(6); } }
+                      if (n.hostile <= 0) snap(n);
+                      return;
+                  }
+                  if (n.gang > 0) for (N o : ns) if (o.gang > 0 && o.gang != n.gang && !o.dead && !o.in && o.car == null && dist(o.x, o.y, n.x, n.y) < 70) {
+                      n.atk -= dt; if (n.atk <= 0) { n.atk = .8f; n.crim = cl(n.crim + 1); hit2(o, n.armed ? 18 : 8, n); } return;
+                  }
+                  float tx, ty; boolean door = false;
+                  if (n.dest != null && n.bx == n.dest.bx && n.by == n.dest.by && (n.c == 2 || n.c == 3)) { tx = n.dest.dx; ty = n.dest.dy; door = true; }
+                  else { tx = (n.bx * BS + (n.c == 0 || n.c == 3 ? 2 : 9) + .5f) * T; ty = (n.by * BS + (n.c < 2 ? 2 : 9) + .5f) * T; }
+                  float ex = tx - n.x, ey = ty - n.y, ed = (float) Math.sqrt(ex * ex + ey * ey);
+                  if (ed < 5) {
+                      if (door) { if (n.dest.t == 'h') n.dest = null; else { n.in = true; n.inT = 3 + rd.nextFloat() * 3; } }
+                      else {
+                          if (n.dest == null && rd.nextInt(100) < 10) plan(n);
+                          int[] q = nxt(n.bx, n.by, n.c, n.dest == null ? 0 : n.dest.bx, n.dest == null ? 0 : n.dest.by, n.dest == null);
+                          n.bx = q[0]; n.by = q[1]; n.c = q[2];
+                      }
+                  } else { float s = n.sp * dt / ed; n.x += ex * s; n.y += ey * s; }
+              }
+
+              void hit2(N o, int d, N by) {
+                  if (o.inv > 0) return; o.inv = .3f; o.hp -= d; burst(o.x, o.y, 0xFFD32F2F, 5); snd(o.x, o.y, hitS);
+                  if (o.hp <= 0 && !o.dead) { o.dead = true; o.dT = 25; by.cash += o.cash; o.cash = 0; crimeIdx = Math.min(1, crimeIdx + .01f); }
+              }
+              void hit(N n, int d, int lvl) {
+                  if (n.inv > 0) return;
+                  n.inv = .35f; n.hp -= d; n.like = cl(n.like - 25); n.happy = cl(n.happy - 15); n.crim = cl(n.crim + 3);
+                  burst(n.x, n.y, 0xFFD32F2F, 8); snd(n.x, n.y, hitS); pcrim = Math.min(100, pcrim + 2);
+                  if (n.crim > 50 || n.armed || n.like < 10) n.hostile = 12;
+                  if (n.hp <= 0 && !n.dead) {
+                      n.dead = true; n.dT = 25; cash += n.cash; n.cash = 0;
+                      if (n.car != null) { n.car.drv = null; n.car.ai = false; n.car = null; }
+                      lvl = Math.max(lvl, 3); crimeIdx = Math.min(1, crimeIdx + .03f); say("You killed " + n.name + "!");
+                  }
+                  crime(lvl);
+              }
+              void hitC(Cop c, int d) { c.hp -= d; burst(c.x, c.y, 0xFFD32F2F, 8); snd(c.x, c.y, hitS); }
+              void dmg(int d) { hp -= d; flash = 1; snd(pl.x, pl.y, hitS); burst(pl.x, pl.y, 0xFFD32F2F, 4); if (hp <= 0) die(); }
+              void die() {
+                  say("WASTED. You lost 20% of your cash."); cash = (int) (cash * .8f); stars = 0; hp = 100; drv = null;
+                  Bd b = find('P'); pl.x = b.dx; pl.y = b.dy + 10;
+              }
+              void crime(int lvl) {
+                  if (job == 2) lvl--;
+                  if (lvl <= 0) return;
+                  boolean seen = false;
+                  for (N n : ns) if (!n.dead && !n.in && n.car == null && dp(n.x, n.y) < 280) { seen = true; n.like = cl(n.like - 3); }
+                  if (seen && rd.nextInt(100) < 75 && lvl > stars) { stars = lvl; starT = 0; say("A witness called the cops: " + lvl + " star" + (lvl > 1 ? "s" : "")); }
+                  crimeIdx = Math.min(1, crimeIdx + .004f * lvl);
+              }
+
+              void attack() {
+                  float ca = cs(pa), sa = sn(pa); boolean g = wpn == 1 && gun && ammo > 0;
+                  float wid = g ? 16 : 30, bd = g ? 340 : 46; E best = null; atkT = g ? .28f : .4f;
+                  if (g) { ammo--; snd(pl.x, pl.y, shotS); burst(pl.x + ca * 14, pl.y + sa * 14, 0xFFFFA000, 3); if (rd.nextInt(3) == 0) crime(1); }
+                  for (N n : ns) if (!n.dead && !n.in && n.car == null) {
+                      float rx = n.x - pl.x, ry = n.y - pl.y, al = rx * ca + ry * sa, la = Math.abs(-rx * sa + ry * ca);
+                      if (al > 0 && al < bd && la < wid) { bd = al; best = n; }
+                  }
+                  for (Cop c : cops) {
+                      float rx = c.x - pl.x, ry = c.y - pl.y, al = rx * ca + ry * sa, la = Math.abs(-rx * sa + ry * ca);
+                      if (al > 0 && al < bd && la < wid) { bd = al; best = c; }
+                  }
+                  if (g) burst(pl.x + ca * bd, pl.y + sa * bd, 0xFFFFEB3B, 2);
+                  if (best instanceof N) hit((N) best, g ? 34 : 12, g ? 2 : 1); else if (best instanceof Cop) hitC((Cop)
